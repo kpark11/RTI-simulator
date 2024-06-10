@@ -1,14 +1,9 @@
-A-comprehensive-review-of-approaches-to-detect-fatigue-using-machine-learning-techniques.pdf
-EEG brain signals to detect the sleep health of a driver - An automated framework system based on deep learning.pdf
-Eden-Band-Competition.pdf
-MLops.ipynb
 build/*
 build
 data_files/*
-data_files/
+dat_files
+data.zip
 dist/*
 dist
 icon.jpg
-test/*
-test
 
