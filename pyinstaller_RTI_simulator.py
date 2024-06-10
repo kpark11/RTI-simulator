@@ -25,6 +25,7 @@ PyInstaller.__main__.run([
     'hide-late', # Windows only
     #'--windowed',
     #'--console',
+    #'--splash=icon.jpg',
     '--icon=icon.jpg',
     '--add-data=data_files\Sub10-1__result.mat;data_files',
     '--add-data=data_files\\Sub10-2__result.mat;data_files',
@@ -54,6 +55,6 @@ PyInstaller.__main__.run([
     '--add-data=data_files\\KNeighborsClassifier.pkl;data_files',
     '--add-data=data_files\\KNeighborsClassifier_best_param.pkl;data_files',
     '--hidden-import=joblib',
-    '--hidden-import=scikit-learn'
+    '--collect-submodules=sklearn',
     
 ])

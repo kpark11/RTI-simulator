@@ -49,11 +49,7 @@ if getattr(sys, 'frozen', False):
     bundle_dir = sys._MEIPASS
 else:
     # we are running in a normal Python environment
-    try:
-        bundle_dir = os.path.dirname(os.path.abspath('EdenBand'))
-    except:
-        bundle_dir = os.path.dirname(os.path.abspath(__file__))
-
+    bundle_dir = os.path.dirname(os.path.abspath(__file__))
 path_to_data = bundle_dir + '/data_files'
 #sys.path.append(path_to_data)
 ##################################################################################################
@@ -134,6 +130,7 @@ class StartUp:
         
         # Loading the model here. 
         try:
+            print('loading model 1')
             self.model1 = joblib.load(path_to_data + '/RandomForestClassifier.pkl')
             self.win.after(1000, self.progStatus.set("model 1 successfully loaded"))
             progress['value'] = 40
@@ -154,6 +151,7 @@ class StartUp:
         
         # Loading the model here
         try:
+            print('loading model 2')
             self.model2 = joblib.load(path_to_data + '/KNeighborsClassifier.pkl')
             self.win.after(1000, self.progStatus.set("model 2 successfully loaded"))
             progress['value'] = 60
