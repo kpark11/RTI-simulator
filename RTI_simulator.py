@@ -17,7 +17,6 @@ import logging
 import re
 import winsound
 
-
 import joblib
 
 import tkinter as tk
@@ -36,6 +35,10 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg #, NavigationToo
 
 from scipy.io import loadmat
 from scipy.signal import welch
+import mne
+
+from pyriemann.embedding import SpectralEmbedding
+from pyriemann.estimation import Covariances
 
 ##################################################################################################
 
@@ -59,6 +62,26 @@ logging.basicConfig(filename='tracking.log', encoding='utf-8', level=logging.DEB
 
 ##################################################################################################
 
+
+chnames = [
+        'Fp1',
+        'Fp2',
+        'Fc5',
+        'Fz',
+        'Fc6',
+        'T7',
+        'Cz',
+        'T8',
+        'P7',
+        'P3',
+        'Pz',
+        'P4',
+        'P8',
+        'O1',
+        'Oz',
+        'O2',
+        'stim']
+
 # a function to extract data from a single file
 def get_data():
     #f = open(path_to_data + '/r_l.txt','r')
@@ -70,25 +93,31 @@ def get_data():
         data.append(file)
     return data
 
-def preprocess(data,dataset_n):
-    window = 50000
-    skip = 5000
-    num = data[dataset_n]['NBM_TABR'][(~np.isnan(data[dataset_n]['NBM_TABR'])) & (~np.isnan(data[dataset_n]['NBM_TABR']))].shape[0]
-    freq = []
-    y_welch = []
-    y_mean = []
-    y_std = []
-    for i in range(0,num-window,skip):
-        freq.append(data[dataset_n]['ts_NBM_Sim'][(~np.isnan(data[dataset_n]['NBM_TABR'])) & (~np.isnan(data[dataset_n]['NBM_TABR']))][int(i+window/2)])
-        test = data[dataset_n]['NBM_TABR'][(~np.isnan(data[dataset_n]['NBM_TABR'])) & (~np.isnan(data[dataset_n]['NBM_TABR']))][i:(i+window)]
-        _ , S_test = welch(test, fs=250)
-        y_welch.append(S_test[1])
-        S_test = np.mean(test)
-        y_mean.append(S_test)
-        S_test = np.std(test)
-        y_std.append(S_test)
-        
-    return freq,y_welch,y_mean,y_std
+def processData(data):
+    S = data['SIGNAL'][:, 1:17]
+    stim_close = data['SIGNAL'][:, 17]
+    stim_open = data['SIGNAL'][:, 18]
+    stim = 1 * stim_close + 2 * stim_open
+    chtypes = ['eeg'] * 16 + ['stim']
+    X = np.concatenate([S, stim[:, None]], axis=1).T
+
+    info = mne.create_info(ch_names=chnames, sfreq=512,
+                           ch_types=chtypes,
+                           verbose=False)
+    raw = mne.io.RawArray(data=X, info=info, verbose=False)
+    # filter data and resample
+    fmin = 3
+    fmax = 40
+    raw.filter(fmin, fmax, verbose=False)
+    raw.resample(sfreq=128, verbose=False)
+
+    # detect the events and cut the signal into epochs
+    events = mne.find_events(raw=raw, shortest_event=1, verbose=False)
+    event_id = {'closed': 1, 'open': 2}
+    epochs = mne.Epochs(raw, events, event_id, tmin=-0.2, tmax=0.5, baseline=None,
+                        verbose=False,preload=True)
+    epochs.pick_types(eeg=True,verbose=False)
+    return raw,epochs,events
 
 ##################################################################################################
 
@@ -125,45 +154,72 @@ class StartUp:
         progress['value'] = 20
         self.win.update()
         
-        self.win.after(1000, self.progStatus.set("Loading model 1"))
+        self.win.after(1000, self.progStatus.set("Loading the RF model"))
         self.win.update()
         
         # Loading the model here. 
         try:
-            print('loading model 1')
-            self.model1 = joblib.load(path_to_data + '/RandomForestClassifier.pkl')
-            self.win.after(1000, self.progStatus.set("model 1 successfully loaded"))
+            print('loading the RF model')
+            self.model1 = joblib.load(path_to_data + '/RF_model.pkl')
+            print('RF model successfully loaded')
+            self.win.after(1000, self.progStatus.set("RF model successfully loaded"))
             progress['value'] = 40
             self.win.update()
         except:
+            print('RF model failed to load')
             self.win.after(1000, self.progStatus.set('-'*50 + \
                                                      '\n' + \
                                                      ' '*10 + \
-                                                     "failed to load the model 1" + \
+                                                     "failed to load the RF model" + \
                                                      '\n' + \
                                                      '-'*50))
             progress['value'] = 40
             self.model1 = ''
             self.win.update()
             
-        self.win.after(1000, self.progStatus.set("Loading model 2"))
+        self.win.after(1000, self.progStatus.set("Loading the SVC model"))
         self.win.update()
         
         # Loading the model here
         try:
-            print('loading model 2')
-            self.model2 = joblib.load(path_to_data + '/KNeighborsClassifier.pkl')
-            self.win.after(1000, self.progStatus.set("model 2 successfully loaded"))
+            print('loading the SVC model')
+            self.model2 = joblib.load(path_to_data + '/SVC_model.pkl')
+            print('SVC model successfully loaded')
+            self.win.after(1000, self.progStatus.set("SVC model successfully loaded"))
             progress['value'] = 60
             self.win.update()
         except:
+            print('SVC model failed to load')
             self.win.after(1000, self.progStatus.set('-'*50 + \
                                                      '\n' + \
                                                      ' '*10 + \
-                                                     "failed to load the model 2" + \
+                                                     "failed to load the SVC model" + \
                                                      '\n' + \
                                                      '-'*50))
             progress['value'] = 60
+            self.model2 = ''
+            self.win.update()
+            
+        self.win.after(1000, self.progStatus.set("Loading the LSTM model"))
+        self.win.update()
+        
+        
+        try:
+            print('loading LSTM model')
+            self.model3 = joblib.load(path_to_data + '/LSTM_model.pkl')
+            print('SVC model successfully loaded')
+            self.win.after(1000, self.progStatus.set("LSTM model successfully loaded"))
+            progress['value'] = 80
+            self.win.update()
+        except:
+            print('LSTM model failed to load')
+            self.win.after(1000, self.progStatus.set('-'*50 + \
+                                                     '\n' + \
+                                                     ' '*10 + \
+                                                     "failed to load the LSTM model" + \
+                                                     '\n' + \
+                                                     '-'*50))
+            progress['value'] = 80
             self.model2 = ''
             self.win.update()
             
@@ -172,25 +228,23 @@ class StartUp:
         
         # Loading the data here
         try:
+            print('loading data')
             self.data = get_data()
+            print('Data successfully loaded')
             self.win.after(1000, self.progStatus.set("Data successfully loaded"))
-            progress['value'] = 80
-            self.win.after(1000, self.progStatus.set("Loading the data"))
+            progress['value'] = 90
             self.win.update()
             
         except:
+            print('data failed to load')
             self.win.after(1000, self.progStatus.set('-'*50 + \
                                                      '\n' + \
                                                      ' '*10 + \
                                                      "failed to load the data" + \
                                                      '\n' + \
                                                      '-'*50))
-            progress['value'] = 80
+            progress['value'] = 90
             self.win.update()
-            
-        
-        progress['value'] = 90
-        self.win.update()
         
         self.win.after(1000, self.progStatus.set("Ready"))
         
@@ -249,34 +303,37 @@ def empty():
     return None
 
 def ModelParam1():
-    param = joblib.load(path_to_data + '/RandomForestClassifier_best_param.pkl')
-    model = joblib.load(path_to_data + '/RandomForestClassifier.pkl')
+    model = joblib.load(path_to_data + '/RF_model.pkl')
     param1 = tk.Tk()
-    param1.wm_title("Random Forest Classifier")
+    param1.wm_title("RF model")
     param1_text = scrolledtext.ScrolledText(param1,width=80,height=15)
     param1_text.grid(row=0,column=0,pady=5)
     param1_text.insert(tk.END,'The model:')
     param1_text.insert(tk.END,'\n')
     param1_text.insert(tk.END,model)
     param1_text.insert(tk.END,'\n')
-    param1_text.insert(tk.END,'Best parameters:')
-    param1_text.insert(tk.END,'\n')
-    param1_text.insert(tk.END,param)
         
 def ModelParam2():
-    model = joblib.load(path_to_data + '/KNeighborsClassifier.pkl')
-    param = joblib.load(path_to_data + '/KNeighborsClassifier_best_param.pkl')
+    model = joblib.load(path_to_data + '/SVC_model.pkl')
     param2 = tk.Tk()
-    param2.wm_title("K-Nearest Neighbor Classifier")
+    param2.wm_title("SVC model")
     param2_text = scrolledtext.ScrolledText(param2,width=80,height=15)
     param2_text.grid(row=0,column=0,pady=5)
     param2_text.insert(tk.END,'The model:')
     param2_text.insert(tk.END,'\n')
     param2_text.insert(tk.END,model)
     param2_text.insert(tk.END,'\n')
-    param2_text.insert(tk.END,'Best parameters:')
+
+def ModelParam3():
+    model = joblib.load(path_to_data + '/LSTM_model.pkl')
+    param2 = tk.Tk()
+    param2.wm_title("LSTM model")
+    param2_text = scrolledtext.ScrolledText(param2,width=80,height=15)
+    param2_text.grid(row=0,column=0,pady=5)
+    param2_text.insert(tk.END,'The model:')
     param2_text.insert(tk.END,'\n')
-    param2_text.insert(tk.END,param)
+    param2_text.insert(tk.END,model)
+    param2_text.insert(tk.END,'\n')
 
 def OpenLog():
     f = open('tracking.log','r')
@@ -302,14 +359,26 @@ def Clearplot(self):
     self.frame2.grid(row=1,column=0,padx=5)
      
     self.fig = Figure(figsize=(14,6.5))
-    self.ax1 = self.fig.add_subplot(411)
-    self.ax2 = self.ax1.twinx()
-    self.ax3 = self.fig.add_subplot(412)
-    self.ax4 = self.ax3.twinx()
-    self.ax5 = self.fig.add_subplot(413)
-    self.ax6 = self.ax5.twinx()
-    self.ax7 = self.fig.add_subplot(414)
-    self.ax8 = self.ax7.twinx()
+    
+    self.ax = self.fig.subplot_mosaic([['TopLeft', 'Right'],['BottomLeft','Right']],
+                              gridspec_kw={'width_ratios':[10, 5]})
+    self.ax2 = self.ax['TopLeft'].twinx()
+    
+    self.ax['TopLeft'].set_title('Raw Data')
+    self.ax['TopLeft'].set_ylabel('Signal (Arb. Unit)')
+    self.ax['TopLeft'].set_xlabel('Seconds')
+    self.ax2.set_ylim(0,3)
+    self.ax2.set_ylabel('events (1 or 2)')
+
+    self.ax['BottomLeft'].set_title('Power Spectral Density')
+    self.ax['BottomLeft'].set_ylabel('Signal (Arb. Unit)')
+    self.ax['BottomLeft'].set_xlabel('Frequency (Hz)')
+    
+    self.ax['Right'].set_title('Spectral embedding with covariances')
+    self.ax['Right'].set_ylabel('')
+    self.ax['Right'].set_xlabel('')
+    
+    self.fig.tight_layout()
 
     self.output = FigureCanvasTkAgg(self.fig, master=self.frame2)
     self.output.draw()
@@ -323,15 +392,25 @@ def Replot(self):
     self.frame2.grid(row=1,column=0,padx=5)
     
     self.fig = Figure(figsize=(14,6.5))
-    self.ax1 = self.fig.add_subplot(411)
-    self.ax2 = self.ax1.twinx()
-    self.ax3 = self.fig.add_subplot(412)
-    self.ax4 = self.ax3.twinx()
-    self.ax5 = self.fig.add_subplot(413)
-    self.ax6 = self.ax5.twinx()
-    self.ax7 = self.fig.add_subplot(414)
-    self.ax8 = self.ax7.twinx()
-            
+    
+    self.ax = self.fig.subplot_mosaic([['TopLeft', 'Right'],['BottomLeft','Right']],
+                              gridspec_kw={'width_ratios':[10, 5]})
+    self.ax2 = self.ax['TopLeft'].twinx()
+    
+    self.ax['TopLeft'].set_title('Raw Data')
+    self.ax['TopLeft'].set_ylabel('Signal (Arb. Unit)')
+    self.ax['TopLeft'].set_xlabel('Seconds')
+    self.ax2.set_ylim(0,3)
+    self.ax2.set_ylabel('events (1 or 2)')
+
+    self.ax['BottomLeft'].set_title('Power Spectral Density')
+    self.ax['BottomLeft'].set_ylabel('Signal (Arb. Unit)')
+    self.ax['BottomLeft'].set_xlabel('Frequency (Hz)')
+    
+    self.ax['Right'].set_title('Spectral embedding with covariances')
+    self.ax['Right'].set_ylabel('')
+    self.ax['Right'].set_xlabel('')
+
     
 def Plot(self,
          data,
@@ -340,55 +419,43 @@ def Plot(self,
     Replot(self)
     try:
         subj = int(self.dataset_n.get().split('#')[1])
-        freq, y_welch, y_mean, y_std = preprocess(data,subj)
+        ch = str(self.ch_n.get().split(' ')[1])
+        raw,epochs,events = processData(data[subj])
+        epochs.load_data().pick(ch)
         
-        norm = np.mean(data[subj]['NBM_TABR'][(~np.isnan(data[subj]['NBM_TABR'])) & (~np.isnan(data[subj]['NBM_TABR']))])
-        self.ax1.plot(data[subj]['ts_NBM_Sim'],data[subj]['NBM_TABR'],alpha=0.8,c='orange')
-        self.ax1.axhline(norm,alpha=0.2,linestyle='--',c='black')
-        self.ax1.set_title('Raw NBM')
-        self.ax1.set_ylabel('Fatigue')
-        self.ax1.set_xlabel('Seconds')
-        self.ax2.scatter(data[subj]['KSS'][1:,0],data[subj]['KSS'][1:,1],alpha=0.8,c='black')
-        self.ax2.set_ylim(0,10)
-        for i in range(len(data[subj]['KSS'][1:,0])):
-            self.ax2.axvline(data[subj]['KSS'][(1+i),0],ymax=data[subj]['KSS'][(1+i),1]/10,alpha=0.3,linestyle='--',c='r')
-        self.ax2.set_ylabel('KSS scale')
+        norm = np.mean(raw.get_data()[chnames.index(ch)])
+        self.ax['TopLeft'].plot(raw.get_data()[chnames.index(ch)],alpha=0.8,c='orange')
+        self.ax['TopLeft'].axhline(norm,alpha=0.2,linestyle='--',c='black')
+        self.ax2.scatter(events[:,0],events[:,-1],alpha=0.5,c='black')
+        self.ax2.set_ylim(0,3)
+        for i in range(len(events[:,-1])):
+            self.ax2.axvline(events[i,0],ymin=0,ymax=events[i,-1],alpha=0.3,linestyle='--',c='r')
+        self.ax2.set_ylabel('Events (1 or 2)')
         
-        norm = np.mean(y_mean)
-        self.ax3.plot(freq[:-20],np.array(y_mean[:-20]),alpha=0.8,c='orange')
-        self.ax3.axhline(norm,alpha=0.2,linestyle='--',c='black')
-        self.ax3.set_title('Mean Raw NBM')
-        self.ax3.set_ylabel('NBM Signal Mean')
-        self.ax3.set_xlabel('Seconds')
-        self.ax4.scatter(data[subj]['KSS'][1:,0],data[subj]['KSS'][1:,1],alpha=0.8,c='black')
-        self.ax4.set_ylim(0,10)
-        for i in range(len(data[subj]['KSS'][1:,0])):
-            self.ax4.axvline(data[subj]['KSS'][(1+i),0],ymax=data[subj]['KSS'][(1+i),1]/10,alpha=0.3,linestyle='--',c='r')
-        self.ax4.set_ylabel('KSS scale')
+        # estimate the averaged spectra for each condition
+        X_closed = epochs['closed'].get_data(verbose=False)
+        f, S_closed = welch(X_closed, fs=epochs.info['sfreq'], axis=2)
+        S_closed = np.mean(S_closed, axis=0).squeeze()
+        X_opened = epochs['open'].get_data(verbose=False)
+        f, S_opened = welch(X_opened, fs=epochs.info['sfreq'], axis=2)
+        S_opened = np.mean(S_opened, axis=0).squeeze()  
         
-        norm = np.mean(y_std)
-        self.ax5.plot(freq[:-20],y_std[:-20],alpha=0.8,c='orange')
-        self.ax5.axhline(norm,alpha=0.2,linestyle='--',c='black')
-        self.ax5.set_title('Raw NBM Standard Deviation')
-        self.ax5.set_ylabel('Standard deviation\nof NBM signal')
-        self.ax5.set_xlabel('Seconds')
-        self.ax6.scatter(data[subj]['KSS'][1:,0],data[subj]['KSS'][1:,1],alpha=0.8,c='black')
-        self.ax6.set_ylim(0,10)
-        for i in range(len(data[subj]['KSS'][1:,0])):
-            self.ax6.axvline(data[subj]['KSS'][(1+i),0],ymax=data[subj]['KSS'][(1+i),1]/10,alpha=0.3,linestyle='--',c='r')
-        self.ax6.set_ylabel('KSS scale')
+        self.ax['BottomLeft'].plot(f,S_opened,alpha=0.8,c='red',label='opened')
+        self.ax['BottomLeft'].plot(f,S_closed,alpha=0.8,c='blue',label='closed')
+        self.ax['BottomLeft'].legend()
         
-        norm = np.mean(y_welch)
-        self.ax7.plot(freq[:-20],y_welch[:-20],alpha=0.8,c='orange')
-        self.ax7.axhline(norm,alpha=0.2,linestyle='--',c='black')
-        self.ax7.set_title('Power Spectral Density')
-        self.ax7.set_ylabel('Power Spectral Density')
-        self.ax7.set_xlabel('Seconds')
-        self.ax8.scatter(data[subj]['KSS'][1:,0],data[subj]['KSS'][1:,1],alpha=0.8,c='black')
-        self.ax8.set_ylim(0,10)
-        for i in range(len(data[subj]['KSS'][1:,0])):
-            self.ax8.axvline(data[subj]['KSS'][(1+i),0],ymax=data[subj]['KSS'][(1+i),1]/10,alpha=0.3,linestyle='--',c='r')
-        self.ax8.set_ylabel('KSS scale')
+        X = epochs.get_data(verbose=False)
+        y = events[:,-1]
+        
+        C = Covariances(estimator='lwf').fit_transform(X)
+        emb = SpectralEmbedding(metric='riemann').fit_transform(C)
+        colors = {1: 'r', 2: 'b'}
+        for embi, yi in zip(emb, y):
+            self.ax['Right'].scatter(embi[0], embi[1], s=120, c=colors[yi])
+        labels = {2: 'open', 1: 'closed'}
+        for yi in np.unique(y):
+            self.ax['Right'].scatter([], [], c=colors[yi], label=labels[yi])
+        self.ax['Right'].legend()
         
         self.fig.tight_layout()
         
@@ -399,123 +466,64 @@ def Plot(self,
         Clearplot(self)
         pass
 
-
+def choose_model(start_sim,stop_sim):
+    start_sim.configure(state='normal')
+    stop_sim.configure(state='normal')
+    
+    
 def stopping_sim(sim_state):
     sim_state.set(False)
 
-def simulate(self,
-             win,
-             data,
-             model1,
-             model2,
-             ):
-    
-    subj = int(self.dataset_n.get().split('#')[1])
-    t = win.current_theme
-    
-    popup_sim = ThemedTk(theme=t)
-    color_sim = Style().lookup("TFrame", "background", default="black")
-    popup_sim.configure(bg=color_sim)
-    popup_sim.wm_title("Simulation")
-    
-    #############################################################################################
-    
-    frame_sim = Frame(popup_sim)
-    frame_sim.grid(row=0,column=0,padx=50)
-    
-    frame_sim1 = Frame(popup_sim)
-    frame_sim1.grid(row=1,column=0)
-    
-    #############################################################################################
-    
-    time_label = Label(frame_sim,text='Time (s): ')   
-    time_label.grid(row=0,column=0)
-    
-    time_sim = Label(frame_sim,text='')
-    time_sim.grid(row=0,column=1,padx=5)
-    
-    sig_label = Label(frame_sim,text='Fatigue signal: ')   
-    sig_label.grid(row=1,column=0)
-    
-    sig_sim = Label(frame_sim,text='')
-    sig_sim.grid(row=1,column=1,padx=5,pady=2)
-    
-    KSS_label = Label(frame_sim,text='KSS scale (1-10): ')
-    KSS_label.grid(row=2,column=0,pady=2)
-    
-    KSS_sim = Label(frame_sim,text='')
-    KSS_sim.grid(row=2,column=1,padx=5,pady=2)
-    
-    sim_state = tk.BooleanVar()
+def starting_sim(sim_state,
+                 self,
+                 model1,
+                 model2,
+                 model3,
+                 popup_sim,
+                 subj,
+                 ch,
+                 raw,
+                 epochs,
+                 events,
+                 incoming_sig,
+                 alert_label,
+                 thres_set,
+                 time_sim,
+                 sig_sim,
+                 KSS_sim,
+                 canvas_sim,
+                 select_model_set):
     sim_state.set(True)
-
-    stop_sim = Button(frame_sim,text='Stop the simulation',command=lambda: stopping_sim(sim_state))
-    stop_sim.grid(row=3,column=0,rowspan=2)
-    
-    #############################################################################################
-    
-    self.fig_sim = plt.figure(figsize=(15,3))
-    self.ax_sim = self.fig_sim.add_subplot(111)
-    self.ax_sim2 = self.ax_sim.twinx()
-    
-    self.ax_sim.plot(data[subj]['ts_NBM_Sim'],data[subj]['NBM_TABR'],alpha=0.8,c='orange')
-    self.ax_sim.set_title('Raw NBM')
-    self.ax_sim.set_ylabel('Fatigue')
-    self.ax_sim.set_xlabel('Seconds')
-    self.ax_sim2.scatter(data[subj]['KSS'][1:,0],data[subj]['KSS'][1:,1],alpha=0.8,c='black')
-    self.ax_sim2.set_ylim(0,10)
-    for i in range(len(data[subj]['KSS'][1:,0])):
-        self.ax_sim2.axvline(data[subj]['KSS'][(1+i),0],ymax=data[subj]['KSS'][(1+i),1]/10,alpha=0.3,linestyle='--',c='r')
-    self.ax_sim2.set_ylabel('KSS scale')
-    
-    self.fig_sim.tight_layout()
-    
-    #############################################################################################
-    
-    canvas_sim = FigureCanvasTkAgg(self.fig_sim, master=frame_sim1)
-    canvas_sim.draw()
-    canvas_sim.get_tk_widget().pack()
-    
-    threshold_label = Label(frame_sim,text='Set Threshold (1-10 in KSS scale):')
-    threshold_label.grid(row=0,column=2,padx=5,pady=2)
-    
-    thres = tk.StringVar()
-    thres_set = Combobox(frame_sim, textvariable=thres)
-    thres_set['values'] = [str(x) for x in range(1,11)]
-    thres_set.current(6)
-    thres_set.grid(row=1,column=2,padx=5,pady=2)
-    
-    alert_label = Label(frame_sim,text='Waiting for KSS measurement...')
-    alert_label.grid(row=3,column=2,padx=10,pady=2)
-    alert_label.config(width=30)
-    alert_label.config(font=("Courier", 15))
-    
-    #############################################################################################
-    
     sim_x = np.array([])
     sig = np.array([])
     KSS = np.array([])
     time=0
-    alert_line = self.ax_sim2.axhline(int(thres_set.get()),alpha=0.6,linestyle='--',c='red')
+    thres_num = int(thres_set.get())
+    alert_line = self.ax_sim2.axhline(thres_set.get(),alpha=0.6,linestyle='--',c='red')
     measure_window = self.ax_sim.axvspan(0,0,alpha=0.1,facecolor='b')
     alert_window = self.ax_sim2.axhspan(0,0,alpha=0.1,facecolor='r')
     try:
         while sim_state.get():
-            for i in range(int(data[subj]['ts_NBM_Sim'].ravel()[0]),len(data[subj]['NBM_TABR'].ravel()),1000):
-                time  = data[subj]['ts_NBM_Sim'].ravel()[i]
-                sig = np.append(sig,data[subj]['NBM_TABR'].ravel()[i])
+            for i in range(len(incoming_sig)):
+                time  = i
+                sig = np.append(sig,incoming_sig[i])
                 sim_x = np.append(sim_x,time).ravel()
-                measure_window.set_xy([[time-75,0],[time-75,10],[time,10],[time,0],[time-75,0]])
-                alert_window.set_xy([[-500,int(thres_set.get())],[-500,10],[7000,10],[7000,int(thres_set.get())],[-1000,int(thres_set.get())]])
-                alert_line.set_ydata([int(thres_set.get())])
+                measure_window.set_xy([[time-91,0],[time-91,10],[time,10],[time,0],[time-91,0]])
+                alert_window.set_xy([[-500,thres_num],[-500,10],[7000,10],[7000,thres_num],[-1000,thres_num]])
+                alert_line.set_ydata([thres_num])
                 try:
-                    pred = model1.predict(np.array(data[subj]['NBM_TABR'].ravel()[(i-18626):i]).reshape(1,18626))
+                    if select_model_set.get() == 1:
+                        pred = model1.predict()
+                    elif select_model_set.get() == 2:
+                        pred = model2.predict()
+                    else:
+                        pred = model3.predict()
                 except:
                     pred = 0
                     alert_label.config(text='Waiting for KSS measurement...')
                     alert_label.config(foreground="black")
                     alert_label.config(font=("Courier", 15))
-                if pred >= int(thres_set.get()):
+                if pred >= thres_num:
                     alert_label.config(text='Alert: You are fatigued!')
                     alert_label.config(foreground="red")
                     alert_label.config(font=("Courier", 23))
@@ -546,19 +554,160 @@ def simulate(self,
     #toolbar.update()
     #canvas_sim._tkcanvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
     
+
+def simulate(self,
+             win,
+             data,
+             model1,
+             model2,
+             model3
+             ):
+    
+    subj = int(self.dataset_n.get().split('#')[1])
+    ch = str(self.ch_n.get().split(' ')[1])
+    raw,epochs,events = processData(data[subj])
+    incoming_sig = raw.get_data()[chnames.index(ch)]
+    t = win.current_theme
+    
+    popup_sim = ThemedTk(theme=t)
+    color_sim = Style().lookup("TFrame", "background", default="black")
+    popup_sim.configure(bg=color_sim)
+    popup_sim.wm_title("Simulation")
+    
+    #############################################################################################
+    
+    frame_sim = Frame(popup_sim)
+    frame_sim.grid(row=0,column=0,padx=50)
+    
+    frame_sim1 = Frame(popup_sim)
+    frame_sim1.grid(row=1,column=0)
+    
+    #############################################################################################
+    
+    time_label = Label(frame_sim,text='Time (s): ')   
+    time_label.grid(row=0,column=0)
+    
+    time_sim = Label(frame_sim,text='')
+    time_sim.grid(row=0,column=1,padx=5)
+    
+    sig_label = Label(frame_sim,text='EEG signal: ')   
+    sig_label.grid(row=1,column=0)
+    
+    sig_sim = Label(frame_sim,text='')
+    sig_sim.grid(row=1,column=1,padx=5,pady=2)
+    
+    KSS_label = Label(frame_sim,text='KSS scale (1-10): ')
+    KSS_label.grid(row=2,column=0,pady=2)
+    
+    KSS_sim = Label(frame_sim,text='')
+    KSS_sim.grid(row=2,column=1,padx=5,pady=2)
+    
+    sim_state = tk.BooleanVar()
+    sim_state.set(False)
+    
+    #############################################################################################
+    
+    self.fig_sim = Figure(figsize=(14,6.5))
+    self.ax_sim = self.fig.add_subplot(111)
+    self.ax_sim2 = self.ax_sim.twinx()
+    
+    self.ax_sim.set_title('Raw Data')
+    self.ax_sim.set_ylabel('Signal (Arb. Unit)')
+    self.ax_sim.set_xlabel('Seconds')
+    self.ax_sim.set_ylim(0,2)
+    
+    norm = np.mean(raw.get_data()[chnames.index(ch)])
+    self.ax_sim.plot(incoming_sig,alpha=0.8,c='orange')
+    self.ax_sim.axhline(norm,alpha=0.2,linestyle='--',c='black')
+    self.ax_sim2.scatter(events[:,0],events[:,-1],alpha=0.5,c='black')
+    self.ax_sim2.set_ylim(0,3)
+    for i in range(len(events[:,-1])):
+        self.ax2.axvline(events[i,0],ymin=0,ymax=events[i,-1],alpha=0.3,linestyle='--',c='r')
+    
+    self.fig_sim.tight_layout()
+    
+    canvas_sim = FigureCanvasTkAgg(self.fig_sim, master=frame_sim1)
+    canvas_sim.draw()
+    canvas_sim.get_tk_widget().pack()
+    
+    #############################################################################################
+    
+    select_model_label = Label(frame_sim,text='Pick a model')
+    select_model_label.grid(row=0,column=2,padx=5,pady=2)
+    
+    select_model = tk.StringVar()
+    select_model_set = Combobox(frame_sim, textvariable=select_model)
+    select_model_set['values'] = [str(x) for x in range(1,4)]
+    select_model_set.current(1)
+    select_model_set.grid(row=1,column=2,padx=5,pady=2)
+    select_model_set.bind("<<ComboboxSelected>>", lambda event: choose_model(start_sim,stop_sim))
+    
+    threshold_label = Label(frame_sim,text='Set Threshold (1-10 in KSS scale):')
+    threshold_label.grid(row=0,column=3,padx=5,pady=2)
+    
+    thres = tk.StringVar()
+    thres_set = Combobox(frame_sim, textvariable=thres)
+    thres_set['values'] = [str(x) for x in range(1,11)]
+    thres_set.current(6)
+    thres_set.grid(row=1,column=3,padx=5,pady=2)
+    
+    alert_label = Label(frame_sim,text='Waiting for EEG measurement...')
+    alert_label.grid(row=3,column=2,padx=10,pady=2)
+    alert_label.config(width=30)
+    alert_label.config(font=("Courier", 15))
+    
+    #############################################################################################
+    
+    start_sim = Button(frame_sim,text='Start the simulation', state='disable', command=lambda: starting_sim(sim_state,
+                                                                                          self,
+                                                                                          model1,
+                                                                                          model2,
+                                                                                          model3,
+                                                                                          popup_sim,
+                                                                                          subj,
+                                                                                          ch,
+                                                                                          raw,
+                                                                                          epochs,
+                                                                                          events,
+                                                                                          incoming_sig,
+                                                                                          alert_label,
+                                                                                          thres_set,
+                                                                                          time_sim,
+                                                                                          sig_sim,
+                                                                                          KSS_sim,
+                                                                                          canvas_sim,
+                                                                                          select_model_set))
+    start_sim.grid(row=3,column=0,rowspan=2)
+
+    stop_sim = Button(frame_sim,text='Stop the simulation',  state='disable', command=lambda: stopping_sim(sim_state))
+    stop_sim.grid(row=3,column=1,rowspan=2)
     
     
 def Close(self,win): 
     win.destroy() 
     win.quit()
     
+
+def ch_changed(self):
+    print("Channel updated to", self.ch_n.get())
+    if self.dataset_n.get():
+        self.plotting.configure(state='normal')
+        self.clearplotting.configure(state='normal')
+        self.simulateplotting.configure(state='normal')
+
+    
+def Subj_changed(self):
+    print("Subject updated to", self.dataset_n.get())
+    if self.dataset_n.get():
+        self.ch_n.configure(state='normal')
     
 ##################################################################################################
 class MyWindow():
     def __init__(self, 
                  win,
                  model1,
-                 model2,                
+                 model2,
+                 model3,
                  data,
                  ):
         
@@ -576,8 +725,9 @@ class MyWindow():
         self.menubar.add_cascade(label="Work Space", menu=self.filemenu)
         
         self.paramMenu = Menu(self.menubar,tearoff=0)
-        self.paramMenu.add_command(label="Open to see 1st model parameters", command=ModelParam1)
-        self.paramMenu.add_command(label="Open to see 2nd model parameters", command=ModelParam2)
+        self.paramMenu.add_command(label="Open to see RF model parameters", command=ModelParam1)
+        self.paramMenu.add_command(label="Open to see SVC model parameters", command=ModelParam2)
+        self.paramMenu.add_command(label="Open to see LSTM model parameters", command=ModelParam3)
         self.menubar.add_cascade(label="Parameters", menu=self.paramMenu)
         
         # create more pulldown menus ()
@@ -603,49 +753,46 @@ class MyWindow():
         
         self.frame2 = Frame(self.frame)
         self.frame2.grid(row=1,column=0,padx=5)
+        
         ####################################################################################
         
         self.dataset = Label(self.frame1, text = 'Data set number: ')
         self.dataset.grid(row=1,column=0,pady=5)
-        
-        n = tk.StringVar()
-        self.dataset_n = Combobox(self.frame1, textvariable=n)
+        n_dataset = tk.StringVar()
+        self.dataset_n = Combobox(self.frame1, textvariable=n_dataset)
         self.dataset_n['values'] = ['subject #' + str(x) for x in range(len(data))]
         self.dataset_n.grid(row=1,column=1,pady=5)
+        self.dataset_n.bind("<<ComboboxSelected>>", lambda event: Subj_changed(self))
+        
+        self.ch_label = Label(self.frame1, text = '')
+        self.ch_label.grid(row=2,column=0,pady=5)
+        n_channel = tk.StringVar()
+        self.ch_n = Combobox(self.frame1, textvariable=n_channel, state='disable')
+        self.ch_n['values'] = ['channel ' + str(x) for x in chnames]
+        self.ch_n.grid(row=2,column=1,pady=5)
+        self.ch_n.bind("<<ComboboxSelected>>", lambda event: ch_changed(self))
+        
+        ####################################################################################
         
         self.fig = Figure(figsize=(14,6.5))
-        self.ax1 = self.fig.add_subplot(411)
-        self.ax2 = self.ax1.twinx()
-        self.ax3 = self.fig.add_subplot(412)
-        self.ax4 = self.ax3.twinx()
-        self.ax5 = self.fig.add_subplot(413)
-        self.ax6 = self.ax5.twinx()
-        self.ax7 = self.fig.add_subplot(414)
-        self.ax8 = self.ax7.twinx()
         
-        self.ax1.set_title('Raw NBM')
-        self.ax1.set_ylabel('Fatigue')
-        self.ax1.set_xlabel('Seconds')
-        self.ax2.set_ylim(0,10)
+        self.ax = self.fig.subplot_mosaic([['TopLeft', 'Right'],['BottomLeft','Right']],
+                                  gridspec_kw={'width_ratios':[10, 5]})
+        self.ax2 = self.ax['TopLeft'].twinx()
+        
+        self.ax['TopLeft'].set_title('Raw Data')
+        self.ax['TopLeft'].set_ylabel('Signal (Arb. Unit)')
+        self.ax['TopLeft'].set_xlabel('Seconds')
+        self.ax2.set_ylim(0,2)
+        self.ax2.set_ylabel('events (1 or 2)')
 
+        self.ax['BottomLeft'].set_title('Power Spectral Density')
+        self.ax['BottomLeft'].set_ylabel('Signal (Arb. Unit)')
+        self.ax['BottomLeft'].set_xlabel('Frequency (Hz)')
         
-        self.ax3.set_title('Mean Raw NBM')
-        self.ax3.set_ylabel('NBM Signal Mean')
-        self.ax3.set_xlabel('Seconds')
-        self.ax4.set_ylim(0,10)
-        self.ax4.set_ylabel('KSS scale')
-        
-        self.ax5.set_title('Raw NBM Standard Deviation')
-        self.ax5.set_ylabel('Standard deviation\nof NBM signal')
-        self.ax5.set_xlabel('Seconds')
-        self.ax6.set_ylim(0,10)
-        self.ax6.set_ylabel('KSS scale')
-        
-        self.ax7.set_title('Power Spectral Density')
-        self.ax7.set_ylabel('Power Spectral Density')
-        self.ax7.set_xlabel('Seconds')
-        self.ax8.set_ylim(0,10)
-        self.ax8.set_ylabel('KSS scale')
+        self.ax['Right'].set_title('Spectral embedding with covariances')
+        self.ax['Right'].set_ylabel('')
+        self.ax['Right'].set_xlabel('')
         
         self.fig.tight_layout()
         
@@ -653,28 +800,27 @@ class MyWindow():
         self.output.draw()
         self.output.get_tk_widget().pack()
         
-        #self.fig_scrollbar = Scrollbar(self.frame2, command=self.output.yview)
-        #self.fig_scrollbar.grid(row=0,column=1)
+        ####################################################################################
         
-        #self.output.config(yscrollcommand = self.fig_scrollbar.set)
-        
-        self.plotting = Button(self.frame1,text='Plot',command=lambda: Plot(self,
+        self.plotting = Button(self.frame1, text='Plot', command=lambda: Plot(self,
                                                                             data,
-                                                                            ))
-        self.plotting.grid(row=2,column=1,pady=5)
+                                                                            ),
+                               state='disabled')
+        self.plotting.grid(row=2,column=2,pady=5)
         
-        self.clearplotting = Button(self.frame1,text='Clear Plot',command=lambda: Clearplot(self,
-                                                                                            ))
-        self.clearplotting.grid(row=2,column=2,pady=5)
+        self.clearplotting = Button(self.frame1, text='Clear Plot', command=lambda: Clearplot(self,), state='disabled')
+        self.clearplotting.grid(row=2,column=3,pady=5)
         
         self.simulateplotting = Button(self.frame1,text='Simulation',command=lambda: simulate(self,
                                                                                            win,
                                                                                            data,
                                                                                            model1,
-                                                                                           model2
-                                                                                           ))
+                                                                                           model2,
+                                                                                           model3
+                                                                                           ),
+                                       state='disabled')
         #self.insert_lig.place(x=10,y=180)
-        self.simulateplotting.grid(row=2,column=3,pady=5)
+        self.simulateplotting.grid(row=2,column=4,pady=5)
         
         self.exit_button = Button(self.frame1, text="Exit", command=lambda: Close(self,win)) 
         self.exit_button.grid(row=0,column=4) 
@@ -722,6 +868,7 @@ if __name__ == '__main__':
         mywin=MyWindow(window,
                        start.model1,
                        start.model2,
+                       start.model3,
                        start.data,
                        )
         window.title('RTI-simulator')
